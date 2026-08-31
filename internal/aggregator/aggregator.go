@@ -146,6 +146,73 @@ func mergeUnique(a, b []string) []string {
 	return out
 }
 
+type HistoryPoint struct {
+	FetchedAt time.Time `json:"fetched_at"`
+	Rate      float64   `json:"rate"`
+}
+
+func (a *Aggregator) History(ctx context.Context, from, to string, start, end time.Time, step time.Duration) ([]HistoryPoint, error) {
+	from = strings.ToUpper(from)
+	to = strings.ToUpper(to)
+	if from == to {
+		return nil, fmt.Errorf("from and to must differ")
+	}
+	switch {
+	case from == a.cfg.Base:
+		return a.historySide(ctx, to, start, end, step), nil
+	case to == a.cfg.Base:
+		pts := a.historySide(ctx, from, start, end, step)
+		return invertHistory(pts), nil
+	default:
+		fromPts := a.historySide(ctx, from, start, end, step)
+		toPts := a.historySide(ctx, to, start, end, step)
+		return crossHistory(fromPts, toPts), nil
+	}
+}
+
+func (a *Aggregator) historySide(ctx context.Context, quote string, start, end time.Time, step time.Duration) []HistoryPoint {
+	raw, err := a.db.History(ctx, quote, start, end, step)
+	if err != nil {
+		return nil
+	}
+	out := make([]HistoryPoint, len(raw))
+	for i, p := range raw {
+		out[i] = HistoryPoint{FetchedAt: p.FetchedAt, Rate: p.Rate}
+	}
+	return out
+}
+
+func invertHistory(in []HistoryPoint) []HistoryPoint {
+	out := make([]HistoryPoint, len(in))
+	for i, p := range in {
+		if p.Rate != 0 {
+			out[i] = HistoryPoint{FetchedAt: p.FetchedAt, Rate: 1 / p.Rate}
+		}
+	}
+	return out
+}
+
+func crossHistory(fromSide, toSide []HistoryPoint) []HistoryPoint {
+	byT := make(map[int64]float64, len(fromSide))
+	for _, p := range fromSide {
+		byT[p.FetchedAt.Unix()] = p.Rate
+	}
+	out := make([]HistoryPoint, 0, len(toSide))
+	for _, p := range toSide {
+		f, ok := byT[p.FetchedAt.Unix()]
+		if !ok || f == 0 || p.Rate == 0 {
+			continue
+		}
+		out = append(out, HistoryPoint{FetchedAt: p.FetchedAt, Rate: p.Rate / f})
+	}
+	return out
+}
+
+func (a *Aggregator) Prune(ctx context.Context, retention time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-retention)
+	return a.db.PruneOlderThan(ctx, cutoff)
+}
+
 func (a *Aggregator) computeDirect(ctx context.Context, quote string, since time.Time) (Result, error) {
 	readings, providerIDs, err := a.db.LatestReadingsPerProvider(ctx, quote, since)
 	if err != nil {

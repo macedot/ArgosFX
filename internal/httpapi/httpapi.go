@@ -70,6 +70,7 @@ func (s *Server) routes() {
 	s.mux.Get("/v1/rates", s.allRates)
 	s.mux.Get("/v1/rates/{base}", s.ratesFromBase)
 	s.mux.Get("/v1/rates/{base}/{quote}", s.singleRate)
+	s.mux.Get("/v1/rates/{base}/{quote}/history", s.historyHandler)
 	s.mux.Get("/v1/providers", s.handleProviders)
 }
 
@@ -307,6 +308,87 @@ func (s *Server) isAllowed(code string) bool {
 		return true
 	}
 	return false
+}
+
+type historyResponse struct {
+	From    string                       `json:"from"`
+	To      string                       `json:"to"`
+	Start   string                       `json:"start"`
+	End     string                       `json:"end"`
+	Step    string                       `json:"step"`
+	Points  []aggregator.HistoryPoint    `json:"points"`
+}
+
+func (s *Server) historyHandler(w http.ResponseWriter, r *http.Request) {
+	if s.agg == nil {
+		writeError(w, http.StatusServiceUnavailable, "aggregator not configured")
+		return
+	}
+	from := strings.ToUpper(chi.URLParam(r, "base"))
+	to := strings.ToUpper(chi.URLParam(r, "quote"))
+	if !s.isAllowed(from) || !s.isAllowed(to) {
+		writeError(w, http.StatusBadRequest, "currency not allowed")
+		return
+	}
+	q := r.URL.Query()
+	end := time.Now().UTC()
+	start := end.Add(-24 * time.Hour)
+	if v := q.Get("end"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			end = t.UTC()
+		} else {
+			writeError(w, http.StatusBadRequest, "end must be RFC3339")
+			return
+		}
+	}
+	if v := q.Get("start"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			start = t.UTC()
+		} else {
+			writeError(w, http.StatusBadRequest, "start must be RFC3339")
+			return
+		}
+	}
+	step := time.Hour
+	if v := q.Get("step"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "step must be a Go duration (e.g. 1m, 1h, 24h)")
+			return
+		}
+		if d < time.Minute || d > 24*time.Hour {
+			writeError(w, http.StatusBadRequest, "step must be between 1m and 24h")
+			return
+		}
+		step = d
+	}
+	cacheKey := fmt.Sprintf("hist:%s:%s:%s:%s:%s", from, to,
+		start.Format(time.RFC3339), end.Format(time.RFC3339), step)
+	if body, ok := s.cacheLookup(cacheKey); ok {
+		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+		writeBytes(w, body)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	pts, err := s.agg.History(ctx, from, to, start, end, step)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if pts == nil {
+		pts = []aggregator.HistoryPoint{}
+	}
+	resp := historyResponse{
+		From: from, To: to,
+		Start: start.Format(time.RFC3339),
+		End:   end.Format(time.RFC3339),
+		Step:  step.String(),
+		Points: pts,
+	}
+	body := s.cacheStore(cacheKey, resp)
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+	writeBytes(w, body)
 }
 
 func (s *Server) cacheLookup(key string) ([]byte, bool) {

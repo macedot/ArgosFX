@@ -69,6 +69,11 @@ func (m *Manager) Add(j ProviderJob, sched Schedule) error {
 	return nil
 }
 
+func (m *Manager) AddFunc(expr string, fn func()) error {
+	_, err := m.cron.AddFunc(expr, fn)
+	return err
+}
+
 func (m *Manager) runWithTimeout(j ProviderJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

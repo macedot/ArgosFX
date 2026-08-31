@@ -208,3 +208,53 @@ func TestProviders(t *testing.T) {
 		t.Errorf("provider name: got %q", body.Providers[0].Name)
 	}
 }
+
+func TestHistory_USDDirect(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/rates/USD/EUR/history", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body historyResponse
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.From != "USD" || body.To != "EUR" {
+		t.Errorf("from/to: %s/%s", body.From, body.To)
+	}
+	if body.Step == "" {
+		t.Error("expected step to be set")
+	}
+}
+
+func TestHistory_BadStep(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/rates/USD/EUR/history?step=foo", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d", rr.Code)
+	}
+}
+
+func TestHistory_BadEnd(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/rates/USD/EUR/history?end=not-a-date", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d", rr.Code)
+	}
+}
+
+func TestHistory_DisallowedCurrency(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/rates/USD/XYZ/history", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d", rr.Code)
+	}
+}
