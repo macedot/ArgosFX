@@ -1,0 +1,41 @@
+# ArgosFX configuration example.
+#
+# Copy to /etc/argosfx/config.yaml (or set ARGOSFX_CONFIG_PATH).
+
+server:
+  listen: ":8080"
+
+cache:
+  compute_ttl_seconds: 60
+  http_cache_max_age_seconds: 60
+
+aggregator:
+  outlier_tolerance_pct: 2.0
+  min_providers: 1
+  max_age_seconds: 86400
+  retention_days: 365
+
+providers:
+  - name: frankfurter
+    type: frankfurter
+    config:
+      base_url: https://api.frankfurter.app
+    calls_per_day: 1000
+    priority: 1
+    enabled: true
+
+  - name: moneyconvert
+    type: moneyconvert
+    config:
+      base_url: https://cdn.moneyconvert.net
+    calls_per_day: 500
+    priority: 2
+    enabled: true
+
+  - name: yahoo
+    type: yahoo
+    config:
+      base_url: https://query2.finance.yahoo.com
+    calls_per_day: 2000
+    priority: 3
+    enabled: true

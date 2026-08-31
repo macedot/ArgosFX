@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 ArgosFX contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// SPDX-FileCopyrightText: 2026 ArgosFX contributors
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package main
 
 import (
@@ -19,7 +16,9 @@ import (
 	"github.com/macedot/ArgosFX/internal/aggregator"
 	"github.com/macedot/ArgosFX/internal/config"
 	"github.com/macedot/ArgosFX/internal/httpapi"
+	"github.com/macedot/ArgosFX/internal/provider/adapters"
 	"github.com/macedot/ArgosFX/internal/ratelookup"
+	"github.com/macedot/ArgosFX/internal/scheduler"
 	"github.com/macedot/ArgosFX/internal/store"
 )
 
@@ -61,6 +60,51 @@ func main() {
 	})
 
 	cache := ratelookup.NewCache(cfg.Cache.ComputeTTL())
+
+	mgr := scheduler.NewManager(db, logger)
+	codes := quoteCodes(currencies, "USD")
+	added := 0
+	for _, pc := range cfg.Providers {
+		if !pc.IsEnabled() {
+			continue
+		}
+		prov, err := adapters.NewFromConfig(pc)
+		if err != nil {
+			logger.Error("create provider", "name", pc.Name, "err", err)
+			continue
+		}
+		stored, err := db.UpsertProvider(ctx, store.Provider{
+			Name: pc.Name, Type: pc.Type, Config: pc.Config,
+			Priority: pc.Priority, CallsPerDay: pc.CallsPerDay,
+			ScheduleCron: pc.ScheduleCron, Enabled: pc.Enabled,
+		})
+		if err != nil {
+			logger.Error("upsert provider", "name", pc.Name, "err", err)
+			continue
+		}
+		sched := scheduler.ComputeSchedule(derefInt(pc.CallsPerDay), pc.ScheduleCron)
+		if sched.Kind == scheduler.KindCron {
+			logger.Info("scheduled provider (cron)", "name", pc.Name, "expr", sched.Cron)
+		} else {
+			logger.Info("scheduled provider (every)", "name", pc.Name, "every", sched.Every)
+		}
+		job := scheduler.ProviderJob{
+			ProviderID:    stored,
+			Provider:      prov,
+			CurrencyCodes: codes,
+			Base:          "USD",
+			CallsPerDay:   derefInt(pc.CallsPerDay),
+		}
+		if err := mgr.Add(job, sched); err != nil {
+			logger.Error("add job", "name", pc.Name, "err", err)
+			continue
+		}
+		added++
+	}
+	logger.Info("providers scheduled", "count", added)
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
 	srv := httpapi.New(httpapi.Options{
 		Logger:     logger,
 		Aggregator: agg,
@@ -101,4 +145,21 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func quoteCodes(c config.Currencies, base string) []string {
+	out := make([]string, 0, len(c.Allowed))
+	for code := range c.Allowed {
+		if code != base {
+			out = append(out, code)
+		}
+	}
+	return out
 }

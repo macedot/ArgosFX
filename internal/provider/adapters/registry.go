@@ -20,6 +20,13 @@ func NewFromConfig(p config.Provider) (provider.Provider, error) {
 	case "frankfurter":
 		baseURL := stringConfig(p.Config, "base_url", "https://api.frankfurter.app")
 		return NewFrankfurter(baseURL), nil
+	case "moneyconvert":
+		baseURL := stringConfig(p.Config, "base_url", "https://cdn.moneyconvert.net")
+		apiKey := stringConfig(p.Config, "api_key", "")
+		return NewMoneyConvert(baseURL, apiKey), nil
+	case "yahoo":
+		baseURL := stringConfig(p.Config, "base_url", "https://query2.finance.yahoo.com")
+		return NewYahoo(baseURL), nil
 	default:
 		return nil, fmt.Errorf("unknown provider type %q", p.Type)
 	}

@@ -172,7 +172,7 @@ func TestManager_AddAndStartRunsJobs(t *testing.T) {
 	}}
 	m := NewManager(db, quietLogger())
 	job := ProviderJob{ProviderID: pid, Provider: fp, CurrencyCodes: []string{"EUR"}, Base: "USD", CallsPerDay: calls}
-	if err := m.Add(job); err != nil {
+	if err := m.Add(job, Schedule{Kind: KindEvery, Every: 200 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	m.Start(ctx)
