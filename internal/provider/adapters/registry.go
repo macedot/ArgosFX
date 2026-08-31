@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package adapters
 
 import (
@@ -5,8 +11,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tmacedo/fxrate/internal/config"
-	"github.com/tmacedo/fxrate/internal/provider"
+	"github.com/macedot/ArgosFX/internal/config"
+	"github.com/macedot/ArgosFX/internal/provider"
 )
 
 func NewFromConfig(p config.Provider) (provider.Provider, error) {

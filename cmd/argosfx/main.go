@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -10,16 +16,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tmacedo/fxrate/internal/config"
-	"github.com/tmacedo/fxrate/internal/httpapi"
-	"github.com/tmacedo/fxrate/internal/store"
+	"github.com/macedot/ArgosFX/internal/aggregator"
+	"github.com/macedot/ArgosFX/internal/config"
+	"github.com/macedot/ArgosFX/internal/httpapi"
+	"github.com/macedot/ArgosFX/internal/ratelookup"
+	"github.com/macedot/ArgosFX/internal/store"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	cfgPath := envOr("FX_CONFIG_PATH", "/etc/fxrate/config.yaml")
+	cfgPath := envOr("ARGOSFX_CONFIG_PATH", "/etc/argosfx/config.yaml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		logger.Error("load config", "err", err)
@@ -33,7 +41,7 @@ func main() {
 	}
 	logger.Info("currencies loaded", "count", len(currencies.Allowed))
 
-	dbPath := envOr("FX_DB_PATH", "/data/fxrate.db")
+	dbPath := envOr("ARGOSFX_DB_PATH", "/data/argosfx.db")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -45,7 +53,23 @@ func main() {
 	defer db.Close()
 	logger.Info("store opened", "path", dbPath)
 
-	srv := httpapi.New()
+	agg := aggregator.New(db, aggregator.Config{
+		OutlierTolerancePct: cfg.Aggregator.OutlierTolerancePct,
+		MinProviders:        cfg.Aggregator.MinProviders,
+		MaxAgeSeconds:       cfg.Aggregator.MaxAgeSeconds,
+		Base:                "USD",
+	})
+
+	cache := ratelookup.NewCache(cfg.Cache.ComputeTTL())
+	srv := httpapi.New(httpapi.Options{
+		Logger:     logger,
+		Aggregator: agg,
+		Store:      db,
+		Cache:      cache,
+		Currencies: currencies,
+		CacheTTL:   cfg.Cache.HTTPMaxAge(),
+	})
+
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           srv.Handler(),

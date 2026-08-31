@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package config
 
 import (
@@ -93,7 +99,7 @@ func TestLoad_MissingListen(t *testing.T) {
 }
 
 func TestLoadCurrencies_AlwaysIncludesUSD(t *testing.T) {
-	t.Setenv("FX_CURRENCIES", "EUR,BRL,GBP")
+	t.Setenv("ARGOSFX_CURRENCIES", "EUR,BRL,GBP")
 	c, err := LoadCurrencies()
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +112,7 @@ func TestLoadCurrencies_AlwaysIncludesUSD(t *testing.T) {
 }
 
 func TestLoadCurrencies_LowercaseNormalized(t *testing.T) {
-	t.Setenv("FX_CURRENCIES", "eur, brl")
+	t.Setenv("ARGOSFX_CURRENCIES", "eur, brl")
 	c, err := LoadCurrencies()
 	if err != nil {
 		t.Fatal(err)
@@ -119,15 +125,15 @@ func TestLoadCurrencies_LowercaseNormalized(t *testing.T) {
 }
 
 func TestLoadCurrencies_InvalidCode(t *testing.T) {
-	t.Setenv("FX_CURRENCIES", "EURO")
+	t.Setenv("ARGOSFX_CURRENCIES", "EURO")
 	if _, err := LoadCurrencies(); err == nil {
 		t.Fatal("expected error for invalid code")
 	}
 }
 
 func TestLoadCurrencies_Missing(t *testing.T) {
-	t.Setenv("FX_CURRENCIES", "")
+	t.Setenv("ARGOSFX_CURRENCIES", "")
 	if _, err := LoadCurrencies(); err == nil {
-		t.Fatal("expected error when FX_CURRENCIES unset")
+		t.Fatal("expected error when ARGOSFX_CURRENCIES unset")
 	}
 }

@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package adapters
 
 import (
@@ -9,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmacedo/fxrate/internal/provider"
+	"github.com/macedot/ArgosFX/internal/provider"
 )
 
 type Frankfurter struct {

@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package scheduler
 
 import (
@@ -7,8 +13,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"github.com/tmacedo/fxrate/internal/provider"
-	"github.com/tmacedo/fxrate/internal/store"
+	"github.com/macedot/ArgosFX/internal/provider"
+	"github.com/macedot/ArgosFX/internal/store"
 )
 
 type ProviderJob struct {

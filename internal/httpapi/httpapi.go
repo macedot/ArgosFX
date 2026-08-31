@@ -1,20 +1,64 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package httpapi
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/macedot/ArgosFX/internal/aggregator"
+	"github.com/macedot/ArgosFX/internal/config"
+	"github.com/macedot/ArgosFX/internal/ratelookup"
+	"github.com/macedot/ArgosFX/internal/store"
 )
 
 type Server struct {
-	mux *chi.Mux
+	mux        *chi.Mux
+	log        *slog.Logger
+	agg        *aggregator.Aggregator
+	store      *store.DB
+	cache      *ratelookup.Cache
+	currencies config.Currencies
+	cacheTTL   time.Duration
 }
 
-func New() *Server {
-	s := &Server{mux: chi.NewRouter()}
+type Options struct {
+	Logger     *slog.Logger
+	Aggregator *aggregator.Aggregator
+	Store      *store.DB
+	Cache      *ratelookup.Cache
+	Currencies config.Currencies
+	CacheTTL   time.Duration
+}
+
+func New(opts Options) *Server {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.CacheTTL <= 0 {
+		opts.CacheTTL = 60 * time.Second
+	}
+	s := &Server{
+		mux:        chi.NewRouter(),
+		log:        opts.Logger,
+		agg:        opts.Aggregator,
+		store:      opts.Store,
+		cache:      opts.Cache,
+		currencies: opts.Currencies,
+		cacheTTL:   opts.CacheTTL,
+	}
 	s.routes()
 	return s
 }
@@ -23,6 +67,49 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.Get("/v1/healthz", s.healthz)
+	s.mux.Get("/v1/rates", s.allRates)
+	s.mux.Get("/v1/rates/{base}", s.ratesFromBase)
+	s.mux.Get("/v1/rates/{base}/{quote}", s.singleRate)
+	s.mux.Get("/v1/providers", s.handleProviders)
+}
+
+type providerView struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Priority    int    `json:"priority"`
+	Enabled     bool   `json:"enabled"`
+	CallsPerDay *int   `json:"calls_per_day,omitempty"`
+	Schedule    string `json:"schedule,omitempty"`
+	UsedToday   int    `json:"used_today"`
+}
+
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	providers, err := s.store.ListProviders(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]providerView, 0, len(providers))
+	now := time.Now().UTC()
+	for _, p := range providers {
+		used, _ := s.store.UsageToday(ctx, p.ID, now)
+		out = append(out, providerView{
+			Name:        p.Name,
+			Type:        p.Type,
+			Priority:    p.Priority,
+			Enabled:     p.Enabled,
+			CallsPerDay: p.CallsPerDay,
+			Schedule:    p.ScheduleCron,
+			UsedToday:   used,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -32,16 +119,240 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type ratesResponse struct {
+	Base             string             `json:"base"`
+	AsOf             string             `json:"as_of"`
+	FreshnessSeconds float64            `json:"freshness_seconds"`
+	ProvidersUsed    []string           `json:"providers_used"`
+	Rates            map[string]float64 `json:"rates"`
+}
+
+func (s *Server) allRates(w http.ResponseWriter, r *http.Request) {
+	if s.agg == nil {
+		writeError(w, http.StatusServiceUnavailable, "aggregator not configured")
+		return
+	}
+	codes := s.allowedCodes()
+	if len(codes) == 0 {
+		writeJSON(w, http.StatusOK, ratesResponse{
+			Base: "USD", AsOf: time.Now().UTC().Format(time.RFC3339),
+			Rates: map[string]float64{},
+		})
+		return
+	}
+	cacheKey := "USD:*"
+	if body, ok := s.cacheLookup(cacheKey); ok {
+		writeBytes(w, body)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	results, err := s.agg.AllCurrencies(ctx, codes)
+	if err != nil {
+		s.log.Warn("all currencies", "err", err)
+	}
+	rates := map[string]float64{}
+	var freshness float64
+	providers := map[string]struct{}{}
+	for code, res := range results {
+		rates[code] = res.Rate
+		if res.FreshnessSeconds > freshness {
+			freshness = res.FreshnessSeconds
+		}
+		for _, p := range res.ProvidersUsed {
+			providers[p] = struct{}{}
+		}
+	}
+	resp := ratesResponse{
+		Base:             "USD",
+		AsOf:             time.Now().UTC().Format(time.RFC3339),
+		FreshnessSeconds: freshness,
+		ProvidersUsed:    sortedKeys(providers),
+		Rates:            rates,
+	}
+	body := s.cacheStore(cacheKey, resp)
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+	writeBytes(w, body)
+}
+
+func (s *Server) ratesFromBase(w http.ResponseWriter, r *http.Request) {
+	base := strings.ToUpper(chi.URLParam(r, "base"))
+	if !s.isAllowed(base) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("currency %q not allowed", base))
+		return
+	}
+	if s.agg == nil {
+		writeError(w, http.StatusServiceUnavailable, "aggregator not configured")
+		return
+	}
+	codes := s.allowedCodes()
+	out := map[string]float64{}
+	providers := map[string]struct{}{}
+	var freshness float64
+	for _, code := range codes {
+		if code == base {
+			out[code] = 1.0
+			continue
+		}
+		cacheKey := fmt.Sprintf("%s->%s", base, code)
+		if body, ok := s.cacheLookup(cacheKey); ok {
+			var v singleRateResponse
+			if err := json.Unmarshal(body, &v); err == nil {
+				out[code] = v.Rate
+				if v.FreshnessSeconds > freshness {
+					freshness = v.FreshnessSeconds
+				}
+				for _, p := range v.ProvidersUsed {
+					providers[p] = struct{}{}
+				}
+				continue
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		res, err := s.agg.Compute(ctx, base, code)
+		cancel()
+		if err != nil {
+			continue
+		}
+		out[code] = res.Rate
+		if res.FreshnessSeconds > freshness {
+			freshness = res.FreshnessSeconds
+		}
+		for _, p := range res.ProvidersUsed {
+			providers[p] = struct{}{}
+		}
+		_ = s.cacheStore(cacheKey, singleRateResponse{
+			From:             res.From,
+			To:               res.To,
+			Rate:             res.Rate,
+			AsOf:             time.Now().UTC().Format(time.RFC3339),
+			FreshnessSeconds: res.FreshnessSeconds,
+			ProvidersUsed:    res.ProvidersUsed,
+		})
+	}
+	resp := ratesResponse{
+		Base:             base,
+		AsOf:             time.Now().UTC().Format(time.RFC3339),
+		FreshnessSeconds: freshness,
+		ProvidersUsed:    sortedKeys(providers),
+		Rates:            out,
+	}
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type singleRateResponse struct {
+	From             string   `json:"from"`
+	To               string   `json:"to"`
+	Rate             float64  `json:"rate"`
+	AsOf             string   `json:"as_of"`
+	FreshnessSeconds float64  `json:"freshness_seconds"`
+	ProvidersUsed    []string `json:"providers_used"`
+}
+
+func (s *Server) singleRate(w http.ResponseWriter, r *http.Request) {
+	from := strings.ToUpper(chi.URLParam(r, "base"))
+	to := strings.ToUpper(chi.URLParam(r, "quote"))
+	if !s.isAllowed(from) || !s.isAllowed(to) {
+		writeError(w, http.StatusBadRequest, "currency not allowed")
+		return
+	}
+	if s.agg == nil {
+		writeError(w, http.StatusServiceUnavailable, "aggregator not configured")
+		return
+	}
+	cacheKey := fmt.Sprintf("%s->%s", from, to)
+	if body, ok := s.cacheLookup(cacheKey); ok {
+		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+		writeBytes(w, body)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	res, err := s.agg.Compute(ctx, from, to)
+	if err != nil {
+		if errors.Is(err, aggregator.ErrInsufficientProviders) {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := singleRateResponse{
+		From:             res.From,
+		To:               res.To,
+		Rate:             res.Rate,
+		AsOf:             time.Now().UTC().Format(time.RFC3339),
+		FreshnessSeconds: res.FreshnessSeconds,
+		ProvidersUsed:    res.ProvidersUsed,
+	}
+	body := s.cacheStore(cacheKey, resp)
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(s.cacheTTL.Seconds())))
+	writeBytes(w, body)
+}
+
+func (s *Server) allowedCodes() []string {
+	if len(s.currencies.Allowed) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.currencies.Allowed))
+	for c := range s.currencies.Allowed {
+		out = append(out, c)
+	}
+	return out
+}
+
+func (s *Server) isAllowed(code string) bool {
+	if _, ok := s.currencies.Allowed[code]; ok {
+		return true
+	}
+	return false
+}
+
+func (s *Server) cacheLookup(key string) ([]byte, bool) {
+	if s.cache == nil {
+		return nil, false
+	}
+	return s.cache.Get(key)
+}
+
+func (s *Server) cacheStore(key string, v any) []byte {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return body
+	}
+	if s.cache != nil {
+		s.cache.Set(key, body)
+	}
+	return body
+}
+
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+func writeBytes(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func ctxWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), d)
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
 }

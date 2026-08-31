@@ -1,4 +1,4 @@
-module github.com/tmacedo/fxrate
+module github.com/macedot/ArgosFX
 
 go 1.27.0
 

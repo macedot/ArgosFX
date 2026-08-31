@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package aggregator
 
 import (
@@ -9,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmacedo/fxrate/internal/store"
+	"github.com/macedot/ArgosFX/internal/store"
 )
 
 type Config struct {
@@ -42,19 +48,19 @@ type Result struct {
 var ErrNoData = errors.New("no data available")
 var ErrInsufficientProviders = errors.New("insufficient providers")
 
-type aggregator struct {
+type Aggregator struct {
 	db  *store.DB
 	cfg Config
 }
 
-func New(db *store.DB, cfg Config) *aggregator {
+func New(db *store.DB, cfg Config) *Aggregator {
 	if cfg.Base == "" {
 		cfg.Base = "USD"
 	}
-	return &aggregator{db: db, cfg: cfg}
+	return &Aggregator{db: db, cfg: cfg}
 }
 
-func (a *aggregator) Compute(ctx context.Context, from, to string) (Result, error) {
+func (a *Aggregator) Compute(ctx context.Context, from, to string) (Result, error) {
 	from = strings.ToUpper(from)
 	to = strings.ToUpper(to)
 	if from == "" || to == "" {
@@ -83,7 +89,7 @@ func (a *aggregator) Compute(ctx context.Context, from, to string) (Result, erro
 	}
 }
 
-func (a *aggregator) computeCross(ctx context.Context, from, to string, since time.Time) (Result, error) {
+func (a *Aggregator) computeCross(ctx context.Context, from, to string, since time.Time) (Result, error) {
 	fromUSD, err := a.computeDirect(ctx, from, since)
 	if err != nil {
 		return Result{}, fmt.Errorf("from-side: %w", err)
@@ -140,7 +146,7 @@ func mergeUnique(a, b []string) []string {
 	return out
 }
 
-func (a *aggregator) computeDirect(ctx context.Context, quote string, since time.Time) (Result, error) {
+func (a *Aggregator) computeDirect(ctx context.Context, quote string, since time.Time) (Result, error) {
 	readings, providerIDs, err := a.db.LatestReadingsPerProvider(ctx, quote, since)
 	if err != nil {
 		return Result{}, fmt.Errorf("read latest readings: %w", err)
@@ -224,7 +230,7 @@ func (r Result) invertTo(to string) (Result, error) {
 	return r, nil
 }
 
-func (a *aggregator) AllCurrencies(ctx context.Context, codes []string) (map[string]Result, error) {
+func (a *Aggregator) AllCurrencies(ctx context.Context, codes []string) (map[string]Result, error) {
 	since := time.Now().UTC().Add(-time.Duration(a.cfg.MaxAgeSeconds) * time.Second)
 	out := map[string]Result{}
 	for _, code := range codes {

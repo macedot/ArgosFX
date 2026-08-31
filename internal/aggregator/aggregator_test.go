@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package aggregator
 
 import (
@@ -7,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tmacedo/fxrate/internal/store"
+	"github.com/macedot/ArgosFX/internal/store"
 )
 
-func setup(t *testing.T) (*store.DB, *aggregator) {
+func setup(t *testing.T) (*store.DB, *Aggregator) {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

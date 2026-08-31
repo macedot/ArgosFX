@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// SPDX-FileCopyrightText: 2026 ArgosFX contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package config
 
 import (
@@ -105,10 +111,10 @@ func Load(path string) (Config, error) {
 }
 
 func LoadCurrencies() (Currencies, error) {
-	raw := strings.TrimSpace(os.Getenv("FX_CURRENCIES"))
+	raw := strings.TrimSpace(os.Getenv("ARGOSFX_CURRENCIES"))
 	out := Currencies{Allowed: map[string]struct{}{}}
 	if raw == "" {
-		return out, fmt.Errorf("FX_CURRENCIES env var is required")
+		return out, fmt.Errorf("ARGOSFX_CURRENCIES env var is required")
 	}
 	for _, code := range strings.Split(raw, ",") {
 		code = strings.TrimSpace(strings.ToUpper(code))
