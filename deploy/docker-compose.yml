@@ -1,0 +1,60 @@
+name: argosfx
+
+services:
+  argosfx:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: macedot/argosfx:latest
+    container_name: argosfx
+    restart: unless-stopped
+    environment:
+      ARGOSFX_CURRENCIES: ${ARGOSFX_CURRENCIES:-EUR,BRL,GBP,JPY,CAD}
+      ARGOSFX_CONFIG_PATH: /etc/argosfx/config.yaml
+      ARGOSFX_DB_PATH: /data/argosfx.db
+      ARGOSFX_LOG_LEVEL: ${ARGOSFX_LOG_LEVEL:-info}
+    volumes:
+      - ./config.example.yaml:/etc/argosfx/config.yaml:ro
+      - argosfx-data:/data
+    healthcheck:
+      test: ["CMD", "/argosfx", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - argosfx-net
+    expose:
+      - "8080"
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/caddy.Dockerfile
+    image: macedot/argosfx-caddy:latest
+    container_name: argosfx-caddy
+    restart: unless-stopped
+    depends_on:
+      argosfx:
+        condition: service_healthy
+    ports:
+      - "${ARGOSFX_HTTP_PORT:-8080}:80"
+      - "${ARGOSFX_HTTPS_PORT:-8443}:443"
+    environment:
+      ARGOSFX_DOMAIN: ${ARGOSFX_DOMAIN:-:80}
+      ARGOSFX_TLS: ${ARGOSFX_TLS:-disabled}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - argosfx-net
+
+volumes:
+  argosfx-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  argosfx-net:
+    driver: bridge

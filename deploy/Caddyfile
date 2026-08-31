@@ -1,0 +1,40 @@
+# ArgosFX Caddyfile — rate limit + HTTP response cache + reverse proxy.
+#
+# Mount this at /etc/caddy/Caddyfile in the caddy container.
+# Domain is configurable via the {$ARGOSFX_DOMAIN} env var (defaults to :80 for local).
+
+{
+    {$ARGOSFX_ADMIN:off}
+    auto_https {$ARGOSFX_TLS:disabled}
+}
+
+{$ARGOSFX_DOMAIN::80} {
+    encode zstd gzip
+    header {
+        # Security headers
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    # Per-IP rate limit on all routes.
+    @ratelimit path /v1/*
+    rate_limit @ratelimit {remote.ip} 60r/m
+
+    # Response cache for read-only rate endpoints.
+    # Cache-Control from upstream is honored; defaults to 60s when absent.
+    @cacheable path /v1/rates /v1/rates/* /v1/providers
+    cache {
+        match @cacheable
+        default_max_age 60s
+        stale 60s
+    }
+
+    reverse_proxy argosfx:8080 {
+        header_up Host {host}
+        header_up X-Real-IP {remote.ip}
+        header_up X-Forwarded-For {remote.ip}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
