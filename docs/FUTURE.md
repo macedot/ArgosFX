@@ -20,8 +20,9 @@ Bulk export of `readings` table for batch consumers. Accepts `from`, `to`,
 
 ## Historical downsampling
 
-`/v1/rates/{b}/{q}/history?step=1m|1h|1d` — currently raw, future versions
-pre-aggregate buckets and serve from a downsampled view.
+`/v1/rates/{b}/{q}/history?step=1m|1h|1d` is implemented but returns raw
+readings bucketed by time. Future versions will pre-aggregate buckets in
+a downsampled view for faster long-range queries.
 
 ## Bearer-token auth
 
@@ -41,8 +42,8 @@ provider = new file in `internal/provider/adapters/` + case in
 
 ## MoneyConvert + Yahoo adapters
 
-In Phase 6 of the original plan. Both adapters are interface-only stubs;
-once we confirm URL shapes with their free tier we'll fill them in.
+Both are implemented and shipping in v1 (Frankfurter + MoneyConvert + Yahoo).
+Future adapters land as new files in `internal/provider/adapters/`.
 
 ## Multi-base triangulation
 
@@ -55,11 +56,11 @@ bridges).
 Rolling stats (1h, 24h, 7d), VaR-style metrics. Compute on demand from the
 raw readings table.
 
-## /readyz + /metrics
+## /metrics: full Prometheus client
 
-`/readyz` returns 200 only if at least one provider has a reading within
-`max_age_seconds`. `/metrics` exposes Prometheus counters: provider fetch
-latency, fetch errors by provider, cache hit ratio, budget used today.
+v1 ships a hand-rolled minimal metrics endpoint. Future versions swap in
+`github.com/prometheus/client_golang` for histograms (fetch latency
+distribution), summaries, and the standard Go runtime collectors.
 
 ## Migration path to Postgres
 
