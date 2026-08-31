@@ -107,6 +107,25 @@ func main() {
 		added++
 	}
 	logger.Info("providers scheduled", "count", added)
+
+	if cfg.Aggregator.RetentionDays > 0 {
+		retention := time.Duration(cfg.Aggregator.RetentionDays) * 24 * time.Hour
+		if err := mgr.AddFunc("@daily", func() {
+			ctxPrune, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			n, err := agg.Prune(ctxPrune, retention)
+			if err != nil {
+				logger.Warn("retention prune failed", "err", err)
+				return
+			}
+			logger.Info("retention prune", "rows_removed", n)
+		}); err != nil {
+			logger.Error("schedule retention", "err", err)
+		} else {
+			logger.Info("retention job scheduled", "retention_days", cfg.Aggregator.RetentionDays)
+		}
+	}
+
 	mgr.Start(ctx)
 	defer mgr.Stop()
 
