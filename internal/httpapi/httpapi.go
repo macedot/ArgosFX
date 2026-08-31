@@ -20,6 +20,7 @@ import (
 
 	"github.com/macedot/ArgosFX/internal/aggregator"
 	"github.com/macedot/ArgosFX/internal/config"
+	"github.com/macedot/ArgosFX/internal/obs"
 	"github.com/macedot/ArgosFX/internal/ratelookup"
 	"github.com/macedot/ArgosFX/internal/store"
 )
@@ -32,6 +33,8 @@ type Server struct {
 	cache      *ratelookup.Cache
 	currencies config.Currencies
 	cacheTTL   time.Duration
+	metrics    *obs.Metrics
+	maxAge     time.Duration
 }
 
 type Options struct {
@@ -41,6 +44,8 @@ type Options struct {
 	Cache      *ratelookup.Cache
 	Currencies config.Currencies
 	CacheTTL   time.Duration
+	Metrics    *obs.Metrics
+	MaxAge     time.Duration
 }
 
 func New(opts Options) *Server {
@@ -58,6 +63,8 @@ func New(opts Options) *Server {
 		cache:      opts.Cache,
 		currencies: opts.Currencies,
 		cacheTTL:   opts.CacheTTL,
+		metrics:    opts.Metrics,
+		maxAge:     opts.MaxAge,
 	}
 	s.routes()
 	return s
@@ -67,11 +74,84 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.Get("/v1/healthz", s.healthz)
+	s.mux.Get("/v1/readyz", s.readyz)
+	s.mux.Get("/v1/metrics", s.metricsHandler)
 	s.mux.Get("/v1/rates", s.allRates)
 	s.mux.Get("/v1/rates/{base}", s.ratesFromBase)
 	s.mux.Get("/v1/rates/{base}/{quote}", s.singleRate)
 	s.mux.Get("/v1/rates/{base}/{quote}/history", s.historyHandler)
 	s.mux.Get("/v1/providers", s.handleProviders)
+}
+
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if s.maxAge > 0 {
+		latest, ok, err := s.store.LatestReadingAt(ctx)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "store read failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "no readings yet")
+			return
+		}
+		if time.Since(latest) > s.maxAge {
+			writeError(w, http.StatusServiceUnavailable,
+				fmt.Sprintf("newest reading is %s old (limit %s)", time.Since(latest).Round(time.Second), s.maxAge))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ready",
+		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.metrics == nil {
+		http.Error(w, "metrics not configured", http.StatusServiceUnavailable)
+		return
+	}
+	s.refreshProviderMetrics(r.Context())
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = w.Write([]byte(s.metrics.Text()))
+}
+
+func (s *Server) refreshProviderMetrics(ctx context.Context) {
+	if s.store == nil || s.metrics == nil {
+		return
+	}
+	providers, err := s.store.ListProviders(ctx)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	s.metrics.SetGauge("argosfx_providers_total", float64(len(providers)))
+	enabled := 0
+	for _, p := range providers {
+		if p.Enabled {
+			enabled++
+		}
+		s.metrics.SetLabeled("argosfx_budget_used_today", quote(p.Name), float64(0))
+		used, _ := s.store.UsageToday(ctx, p.ID, now)
+		s.metrics.SetLabeled("argosfx_budget_used_today", quote(p.Name), float64(used))
+		if p.CallsPerDay != nil {
+			s.metrics.SetLabeled("argosfx_budget_limit", quote(p.Name), float64(*p.CallsPerDay))
+		}
+	}
+	s.metrics.SetGauge("argosfx_providers_enabled", float64(enabled))
+	if s.cache != nil {
+		s.metrics.SetGauge("argosfx_cache_size", float64(s.cache.Len()))
+	}
+}
+
+func quote(s string) string {
+	return fmt.Sprintf("provider=%q", s)
 }
 
 type providerView struct {

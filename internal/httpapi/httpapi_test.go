@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/macedot/ArgosFX/internal/aggregator"
 	"github.com/macedot/ArgosFX/internal/config"
+	"github.com/macedot/ArgosFX/internal/obs"
 	"github.com/macedot/ArgosFX/internal/ratelookup"
 	"github.com/macedot/ArgosFX/internal/store"
 )
@@ -184,6 +186,117 @@ func TestRates_CrossRate(t *testing.T) {
 	}
 	if body.Rate < 5.5 || body.Rate > 6.0 {
 		t.Errorf("EUR→BRL expected ~5.6, got %v", body.Rate)
+	}
+}
+
+func newTestMetrics() *obs.Metrics {
+	m := obs.New()
+	m.IncCounter("test_marker")
+	return m
+}
+
+func TestReadyz_Fresh(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/readyz", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestReadyz_NoReadings(t *testing.T) {
+	db := openStore(t)
+	agg := aggregator.New(db, aggregator.Config{
+		OutlierTolerancePct: 2.0, MinProviders: 1, MaxAgeSeconds: 3600, Base: "USD",
+	})
+	srv := New(Options{
+		Aggregator: agg,
+		Store:      db,
+		Cache:      ratelookup.NewCache(time.Minute),
+		Currencies: config.Currencies{Allowed: map[string]struct{}{"USD": {}, "EUR": {}}},
+		CacheTTL:   time.Minute,
+		MaxAge:     time.Hour,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/readyz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d", rr.Code)
+	}
+}
+
+func TestReadyz_Stale(t *testing.T) {
+	db := openStore(t)
+	calls := 1000
+	pid, _ := db.UpsertProvider(context.Background(), store.Provider{
+		Name: "ff", Type: "frankfurter", CallsPerDay: &calls, Enabled: true,
+	})
+	_ = db.InsertReading(context.Background(), store.Reading{
+		ProviderID: pid, Base: "USD", Quote: "EUR", Rate: 0.92,
+		FetchedAt: time.Now().UTC().Add(-2 * time.Hour),
+	})
+	agg := aggregator.New(db, aggregator.Config{
+		OutlierTolerancePct: 2.0, MinProviders: 1, MaxAgeSeconds: 60, Base: "USD",
+	})
+	srv := New(Options{
+		Aggregator: agg,
+		Store:      db,
+		Cache:      ratelookup.NewCache(time.Minute),
+		Currencies: config.Currencies{Allowed: map[string]struct{}{"USD": {}, "EUR": {}}},
+		CacheTTL:   time.Minute,
+		MaxAge:     60 * time.Second,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/readyz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d", rr.Code)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	db := openStore(t)
+	calls := 1000
+	pid, _ := db.UpsertProvider(context.Background(), store.Provider{
+		Name: "ff", Type: "frankfurter", CallsPerDay: &calls, Enabled: true,
+	})
+	_ = db.InsertReading(context.Background(), store.Reading{
+		ProviderID: pid, Base: "USD", Quote: "EUR", Rate: 0.92, FetchedAt: time.Now().UTC(),
+	})
+	metrics := newTestMetrics()
+	agg := aggregator.New(db, aggregator.Config{
+		OutlierTolerancePct: 2.0, MinProviders: 1, MaxAgeSeconds: 3600, Base: "USD",
+	})
+	srv := New(Options{
+		Aggregator: agg,
+		Store:      db,
+		Cache:      ratelookup.NewCache(time.Minute),
+		Currencies: config.Currencies{Allowed: map[string]struct{}{"USD": {}, "EUR": {}}},
+		CacheTTL:   time.Minute,
+		Metrics:    metrics,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"argosfx_providers_total", "argosfx_providers_enabled", "argosfx_budget_used_today"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in metrics body", want)
+		}
+	}
+}
+
+func TestMetricsEndpoint_NoMetrics(t *testing.T) {
+	s, _ := newServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d", rr.Code)
 	}
 }
 

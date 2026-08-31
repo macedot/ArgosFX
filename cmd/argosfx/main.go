@@ -17,6 +17,7 @@ import (
 	"github.com/macedot/ArgosFX/internal/aggregator"
 	"github.com/macedot/ArgosFX/internal/config"
 	"github.com/macedot/ArgosFX/internal/httpapi"
+	"github.com/macedot/ArgosFX/internal/obs"
 	"github.com/macedot/ArgosFX/internal/provider/adapters"
 	"github.com/macedot/ArgosFX/internal/ratelookup"
 	"github.com/macedot/ArgosFX/internal/scheduler"
@@ -65,8 +66,10 @@ func main() {
 	})
 
 	cache := ratelookup.NewCache(cfg.Cache.ComputeTTL())
+	metrics := obs.New()
 
 	mgr := scheduler.NewManager(db, logger)
+	mgr.SetMetrics(metrics)
 	codes := quoteCodes(currencies, "USD")
 	added := 0
 	for _, pc := range cfg.Providers {
@@ -136,6 +139,8 @@ func main() {
 		Cache:      cache,
 		Currencies: currencies,
 		CacheTTL:   cfg.Cache.HTTPMaxAge(),
+		Metrics:    metrics,
+		MaxAge:     cfg.Aggregator.MaxAge(),
 	})
 
 	httpServer := &http.Server{

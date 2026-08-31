@@ -25,10 +25,15 @@ type ProviderJob struct {
 	CallsPerDay   int
 }
 
+type Metrics interface {
+	IncCounter(name string)
+}
+
 type Manager struct {
-	db  *store.DB
-	log *slog.Logger
-	cron *cron.Cron
+	db      *store.DB
+	log     *slog.Logger
+	cron    *cron.Cron
+	metrics Metrics
 }
 
 func NewManager(db *store.DB, log *slog.Logger) *Manager {
@@ -41,6 +46,8 @@ func NewManager(db *store.DB, log *slog.Logger) *Manager {
 		cron: cron.New(),
 	}
 }
+
+func (m *Manager) SetMetrics(mx Metrics) { m.metrics = mx }
 
 func (m *Manager) Start(ctx context.Context) {
 	m.cron.Start()
@@ -98,6 +105,7 @@ func (m *Manager) RunOnce(ctx context.Context, j ProviderJob) error {
 	}
 	readings, err := j.Provider.Fetch(ctx, j.Base, j.CurrencyCodes)
 	if err != nil {
+		m.recordError(j.Provider.Name())
 		return fmt.Errorf("fetch %s: %w", j.Provider.Name(), err)
 	}
 	for _, r := range readings {
@@ -115,8 +123,25 @@ func (m *Manager) RunOnce(ctx context.Context, j ProviderJob) error {
 	if err := m.db.IncrementUsage(ctx, j.ProviderID, time.Now().UTC()); err != nil {
 		return fmt.Errorf("increment usage: %w", err)
 	}
+	m.recordSuccess(j.Provider.Name())
 	m.log.Info("provider fetched",
 		"provider", j.Provider.Name(),
 		"readings", len(readings))
 	return nil
+}
+
+func (m *Manager) recordSuccess(name string) {
+	if m.metrics == nil {
+		return
+	}
+	m.metrics.IncCounter("argosfx_fetch_total")
+	m.metrics.IncCounter("argosfx_fetch_total_" + name)
+}
+
+func (m *Manager) recordError(name string) {
+	if m.metrics == nil {
+		return
+	}
+	m.metrics.IncCounter("argosfx_fetch_errors_total")
+	m.metrics.IncCounter("argosfx_fetch_errors_total_" + name)
 }
