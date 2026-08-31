@@ -50,12 +50,23 @@ func (m *Manager) Stop() {
 	m.cron.Stop()
 }
 
-func (m *Manager) Add(j ProviderJob) error {
+func (m *Manager) Add(j ProviderJob, sched Schedule) error {
 	job := j
-	_, err := m.cron.AddFunc("@every 1s", func() {
+	expr := sched.Cron
+	if sched.Kind == KindEvery {
+		expr = "@every " + sched.Every.String()
+	}
+	id, err := m.cron.AddFunc(expr, func() {
 		m.runWithTimeout(job)
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	m.log.Info("scheduled provider",
+		"provider", job.Provider.Name(),
+		"expr", expr,
+		"entry_id", id)
+	return nil
 }
 
 func (m *Manager) runWithTimeout(j ProviderJob) {
